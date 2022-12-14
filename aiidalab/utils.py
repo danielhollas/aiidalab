@@ -200,7 +200,21 @@ def this_or_only_subdir(path):
 
 def run_pip_install(*args, python_bin=sys.executable):
     return subprocess.Popen(
-        [python_bin, "-m", "pip", "install", "--user", *args],
+        [python_bin, "-m", "pip", "install", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+
+def create_conda_environment(env_name):
+    conda_dir = "/home/jovyan/conda/envs"
+    aiida_env = "aiida-homebase"
+    return subprocess.Popen(
+        [
+            "mamba", 
+            "create",
+            "--clone", f"{conda_dir}/{aiida_env"
+            "-p", env_name
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
