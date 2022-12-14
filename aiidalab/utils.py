@@ -205,15 +205,17 @@ def run_pip_install(*args, python_bin=sys.executable):
         stderr=subprocess.STDOUT,
     )
 
+
 def create_conda_environment(env_name):
-    conda_dir = "/home/jovyan/conda/envs"
     aiida_env = "aiida-homebase"
     return subprocess.Popen(
         [
-            "mamba", 
+            "mamba",
             "create",
-            "--clone", f"{conda_dir}/{aiida_env"
-            "-p", env_name
+            "--clone",
+            aiida_env,
+            "-n",
+            env_name,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
