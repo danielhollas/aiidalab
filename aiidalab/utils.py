@@ -13,19 +13,22 @@ from functools import wraps
 from pathlib import Path
 from subprocess import run
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from cachetools import TTLCache, cached
-from packaging.requirements import Requirement
-from packaging.utils import NormalizedName, canonicalize_name
+from packaging.utils import canonicalize_name
 from requests_cache import CachedSession
 
 from .config import AIIDALAB_REGISTRY
 from .environment import Environment
 from .fetch import fetch_from_url
 from .metadata import Metadata
+
+if TYPE_CHECKING:
+    from packaging.requirements import Requirement
+    from packaging.utils import NormalizedName
 
 logger = logging.getLogger(__name__)
 FIND_INSTALLED_PACKAGES_CACHE = TTLCache(maxsize=32, ttl=60)  # type: ignore
