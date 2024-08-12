@@ -149,6 +149,19 @@ class _AiidaLabApp:
         except NotGitRepository:
             return None
 
+    def parse_python_requirements(self, requirements: list[str]) -> list[Requirement]:
+        parsed_reqs = []
+        for req in requirements:
+            try:
+                parsed_req = Requirement(req)
+            except InvalidRequirement:
+                logger.warning(f"{self.name} app: Invalid requirement '{req}'")
+                print(f"{self.name} app: Invalid requirement '{req}'")
+                continue
+            else:
+                parsed_reqs.append(parsed_req)
+        return parsed_reqs
+
     def installed_version(self) -> AppVersion | str:
         def get_version_from_metadata() -> AppVersion | str:
             version = self.metadata.get("version")
@@ -192,20 +205,11 @@ class _AiidaLabApp:
         """Return a list of available versions excluding the ones with core dependency conflicts."""
         if self.is_registered():
             for version in sorted(self.releases, key=parse, reverse=True):
-                version_requirements = []
-                # TODO: Make this into a function and reuse it everywhere
-                # Or rather, parse the requirements in the Environment class
-                for req in (
+                version_requirements = self.parse_python_requirements(
                     self.releases[version]
                     .get("environment", {})
                     .get("python_requirements", [])
-                ):
-                    try:
-                        parsed_req = Requirement(req)
-                    except InvalidRequirement:
-                        continue
-                    else:
-                        version_requirements.append(parsed_req)
+                )
                 if (
                     prereleases or not parse(version).is_prerelease
                 ) and self._strict_dependencies_met(version_requirements, python_bin):
@@ -301,21 +305,15 @@ class _AiidaLabApp:
 
     @staticmethod
     def _find_incompatibilities_python(
-        requirements: list[str], python_bin: str
+        requirements: list[Requirement], python_bin: str
     ) -> Generator[Requirement, None, None]:
         packages = find_installed_packages(python_bin)
-        # TODO: Perhaps this function should accept list[Requirement]
         for req in requirements:
-            try:
-                parsed_req = Requirement(req)
-            except InvalidRequirement:
-                # TODO: Log an error
-                pass
-            pkg = get_package_by_name(packages, parsed_req.name)
+            pkg = get_package_by_name(packages, req.name)
             if pkg is None:
-                yield parsed_req
-            elif not pkg.fulfills(parsed_req):
-                yield parsed_req
+                yield req
+            elif not pkg.fulfills(req):
+                yield req
 
     def is_detached(self) -> bool:
         """Check whether the app is detached from the registry."""
@@ -339,9 +337,10 @@ class _AiidaLabApp:
 
         for key, spec in environment.items():
             if key == "python_requirements":
+                requirements = self.parse_python_requirements(spec)
                 yield from zip(
                     repeat("python"),
-                    self._find_incompatibilities_python(spec, python_bin),
+                    self._find_incompatibilities_python(requirements, python_bin),
                 )
             else:
                 raise ValueError(f"Unknown eco-system '{key}'")
