@@ -156,7 +156,6 @@ class _AiidaLabApp:
                 parsed_req = Requirement(req)
             except InvalidRequirement:
                 logger.warning(f"{self.name} app: Invalid requirement '{req}'")
-                print(f"{self.name} app: Invalid requirement '{req}'")
                 continue
             else:
                 parsed_reqs.append(parsed_req)
