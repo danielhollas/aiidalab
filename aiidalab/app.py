@@ -307,12 +307,12 @@ class _AiidaLabApp:
         requirements: list[Requirement], python_bin: str
     ) -> Generator[Requirement, None, None]:
         packages = find_installed_packages(python_bin)
-        for req in requirements:
-            pkg = get_package_by_name(packages, req.name)
+        for requirement in requirements:
+            pkg = get_package_by_name(packages, requirement.name)
             if pkg is None:
-                yield req
-            elif not pkg.fulfills(req):
-                yield req
+                yield requirement
+            elif not pkg.fulfills(requirement):
+                yield requirement
 
     def is_detached(self) -> bool:
         """Check whether the app is detached from the registry."""
