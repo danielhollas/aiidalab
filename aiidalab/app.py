@@ -27,7 +27,7 @@ import requests
 import traitlets
 from dulwich.errors import NotGitRepository
 from packaging.requirements import InvalidRequirement, Requirement
-from packaging.version import parse
+from packaging.version import InvalidVersion, parse
 from watchdog.events import EVENT_TYPE_OPENED, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
@@ -78,12 +78,19 @@ class _AiidaLabApp:
     metadata: dict[str, Any]
     name: str
     path: Path
+    # TODO: It would be nicer to use parsed packaging.Version as a key instead of str
     releases: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_registry_entry(
         cls, path: Path, registry_entry: dict[str, Any]
     ) -> _AiidaLabApp:
+        # Filter out invalid versions
+        for version in list(registry_entry.get("releases", {}).keys()):
+            try:
+                parse(version)
+            except InvalidVersion:
+                del registry_entry["releases"][version]
         return cls(
             path=path,
             **{
