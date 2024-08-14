@@ -13,13 +13,14 @@ from functools import wraps
 from pathlib import Path
 from subprocess import run
 from threading import Lock
-from typing import Any
+from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from cachetools import TTLCache, cached
 from packaging.requirements import Requirement
 from packaging.utils import NormalizedName, canonicalize_name
+from packaging.version import InvalidVersion, parse
 from requests_cache import CachedSession
 
 from .config import AIIDALAB_REGISTRY
@@ -200,6 +201,31 @@ def get_package_by_name(packages: dict[str, Package], name: str) -> Package | No
         if package.canonical_name == canonicalize_name(name):
             return package
     return None
+
+
+def is_valid_version(version: str) -> bool:
+    """Return True if given string is a PEP440-compliant version, False otherwise."""
+    try:
+        parse(version)
+    except InvalidVersion:
+        return False
+    else:
+        return True
+
+
+def sort_semantic(versions: Iterable[str], prereleases: bool = True) -> list[str]:
+    """Sort app versions semantically, latest first.
+    Optionally filter out the pre-release versions.
+
+    :raises: packaging.version.InvalidVersion if the input list contains invalid version.
+    """
+    if versions is None:
+        return []
+    return [
+        version
+        for version in sorted(versions, key=parse, reverse=True)
+        if prereleases or not parse(version).is_prerelease
+    ]
 
 
 def split_git_url(git_url):  # type: ignore
