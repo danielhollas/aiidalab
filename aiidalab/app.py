@@ -79,6 +79,7 @@ class _AiidaLabApp:
     name: str
     path: Path
     # TODO: It would be nicer to use parsed packaging.Version as a key instead of str
+    # That way it could also be pre-sorted.
     releases: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -86,11 +87,13 @@ class _AiidaLabApp:
         cls, path: Path, registry_entry: dict[str, Any]
     ) -> _AiidaLabApp:
         # Filter out invalid versions
-        for version in list(registry_entry.get("releases", {}).keys()):
-            try:
-                parse(version)
-            except InvalidVersion:
-                del registry_entry["releases"][version]
+        if releases := registry_entry.get("releases"):
+            versions = list(releases.keys())
+            for version in versions:
+                try:
+                    parse(version)
+                except InvalidVersion:
+                    del registry_entry["releases"][version]
         return cls(
             path=path,
             **{
