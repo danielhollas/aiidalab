@@ -20,7 +20,6 @@ import requests
 from cachetools import TTLCache, cached
 from packaging.requirements import Requirement
 from packaging.utils import NormalizedName, canonicalize_name
-from packaging.version import InvalidVersion, Version, parse
 from requests_cache import CachedSession
 
 from .config import AIIDALAB_REGISTRY
@@ -187,21 +186,6 @@ def _pip_list(python_bin: str | None = None) -> Any:
     ).stdout
 
     return json.loads(output)
-
-
-def parse_version(version: str) -> Version:
-    """Parse version string into packaging.Version
-    If the version is invalid, return Version('0.0.0').
-
-    This function is only meant to be used for sorting,
-    where we want to allow invalid versions coming from git tags,
-    but we want them at the bottom of the sorted list
-    """
-    try:
-        return parse(version)
-    except InvalidVersion:
-        logger.warning(f"Invalid version '{version}'")
-        return Version("0.0.0")
 
 
 def get_package_by_name(packages: dict[str, Package], name: str) -> Package | None:
