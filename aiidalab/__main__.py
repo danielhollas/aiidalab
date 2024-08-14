@@ -250,7 +250,7 @@ def show_environment(app_requirement, indent):
         except IndexError:  # no matching release
             raise click.ClickException(
                 f"{app.name}: No matching release for '{requirement.specifier}'.\n"
-                f"Available releases: {','.join(sort_semantic(app.releases))}"
+                f"Available releases: {','.join(sort_semantic(app.releases, prereleases=True))}"
             )
         else:
             click.echo(f"Selected '{app.name}=={selected_versions[0]}'", err=True)

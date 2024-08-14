@@ -285,7 +285,7 @@ class _AiidaLabApp:
         matching_releases = list(
             specifier.filter(self.releases or [], prereleases=prereleases)
         )
-        # Sort by intrinsic order (e.g. 1.1.0 -> 1.0.1 -> 1.0.0 and so on)
+        # Sort semantically from latest to oldest version (e.g. 1.1.0 -> 1.0.1 -> 1.0.0)
         return sort_semantic(matching_releases, prereleases=prereleases)
 
     @staticmethod
@@ -922,9 +922,7 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
 
         all_available_versions = list(self._app.available_versions(prereleases=True))
         self.has_prereleases = any(
-            parse(ver).is_prerelease
-            for ver in all_available_versions
-            if is_valid_version(ver)
+            parse(version).is_prerelease for version in all_available_versions
         )
 
         self.available_versions = list(
