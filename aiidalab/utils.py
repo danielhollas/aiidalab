@@ -213,7 +213,7 @@ def is_valid_version(version: str) -> bool:
         return True
 
 
-def sort_semantic(versions: Iterable[str], prereleases: bool = True) -> list[str]:
+def sort_semantic(versions: Iterable[str], prereleases: bool = False) -> list[str]:
     """Sort app versions semantically, latest first.
     Optionally filter out the pre-release versions.
 
