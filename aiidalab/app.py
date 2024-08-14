@@ -92,7 +92,7 @@ class _AiidaLabApp:
             for version in versions:
                 if not is_valid_version(version):
                     logger.warning(
-                        f"{registry_entry.get("name", path)}: Ignoring invalid version '{version}'"
+                        f"{registry_entry.get('name', path)}: Ignoring invalid version '{version}'"
                     )
                     del registry_entry["releases"][version]
         return cls(
