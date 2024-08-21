@@ -214,13 +214,11 @@ def is_valid_version(version: str) -> bool:
 
 
 def sort_semantic(versions: Iterable[str], prereleases: bool = False) -> list[str]:
-    """Sort app versions semantically, latest first.
+    """Sort app versions semantically according to semver, latest first.
     Optionally filter out the pre-release versions.
 
     :raises: packaging.version.InvalidVersion if the input list contains invalid version.
     """
-    if versions is None:
-        return []
     return [
         version
         for version in sorted(versions, key=parse, reverse=True)
