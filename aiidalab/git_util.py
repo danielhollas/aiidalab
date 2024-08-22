@@ -40,7 +40,7 @@ class GitManagedAppRepo(Repo):
 
     def list_branches(self) -> Any:
         """List all repository branches."""
-        return branch_list(self)
+        return branch_list(self)  # type: ignore[no-untyped-call]
 
     def branch(self) -> bytes:
         """Return the current branch.
@@ -70,7 +70,7 @@ class GitManagedAppRepo(Repo):
 
     def dirty(self) -> bool:
         """Check if there are likely local user modifications to the app repository."""
-        status_ = status(self)
+        status_ = status(self)  # type: ignore[no-untyped-call]
         return bool(any(bool(_) for _ in status_.staged.values()) or status_.unstaged)
 
     def update_available(self) -> bool:
@@ -109,22 +109,22 @@ class GitManagedAppRepo(Repo):
         pattern = rb"refs\/heads\/"
         return [
             re.sub(pattern, b"", ref)
-            for ref in self.refs.follow(ref)[0]
+            for ref in self.refs.follow(ref)[0]  # type: ignore[no-untyped-call]
             if re.match(pattern, ref)
         ]
 
 
-def git_clone(url, commit, path: Path):  # type: ignore
+def git_clone(url: str, commit: str | None, path: Path) -> None:
     try:
         run(
-            ["git", "clone", str(url), str(path)],
+            ["git", "clone", url, str(path)],
             capture_output=True,
             encoding="utf-8",
             check=True,
         )
         if commit is not None:
             run(
-                ["git", "checkout", str(commit)],
+                ["git", "checkout", commit],
                 capture_output=True,
                 encoding="utf-8",
                 check=True,
