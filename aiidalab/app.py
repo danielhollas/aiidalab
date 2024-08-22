@@ -587,7 +587,7 @@ class AiidaLabAppWatch:
             The AiidaLab app to monitor.
     """
 
-    class AppPathFileSystemEventHandler(FileSystemEventHandler):  # type: ignore[misc]
+    class AppPathFileSystemEventHandler(FileSystemEventHandler):
         """Internal event handeler for app path file system events."""
 
         def __init__(self, app: AiidaLabApp):
@@ -843,6 +843,8 @@ class AiidaLabApp(traitlets.HasTraits):
 
     def _has_git_repo(self) -> bool:
         """Check if the app has a .git folder in it."""
+        if not self.path:
+            return False
         try:
             Repo(self.path)
         except NotGitRepository:
@@ -998,6 +1000,6 @@ class AiidaLabApp(traitlets.HasTraits):
     @property
     def _repo(self) -> Repo:
         """Returns Git repository."""
-        if not self.is_installed():
+        if not self.path or not self.is_installed():
             raise AppNotInstalledException("The app is not installed")
         return Repo(self.path)
