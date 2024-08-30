@@ -26,7 +26,6 @@ from uuid import uuid4
 import requests
 import traitlets
 from dulwich.errors import NotGitRepository
-from packaging.version import parse
 from watchdog.events import (
     EVENT_TYPE_CLOSED_NO_WRITE,
     EVENT_TYPE_OPENED,
@@ -35,27 +34,31 @@ from watchdog.events import (
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
-from aiidalab.utils import (
+from .environment import Environment
+from .git_util import GitManagedAppRepo as Repo
+from .git_util import git_clone
+from .metadata import Metadata
+from .utils import (
     FIND_INSTALLED_PACKAGES_CACHE,
     Package,
     PEP508CompliantUrl,
     find_installed_packages,
     get_package_by_name,
+    is_valid_version,
     run_pip_install,
     run_post_install_script,
     run_verdi_daemon_restart,
+    sort_semantic,
     split_git_url,
     this_or_only_subdir,
     throttled,
 )
 
-from .environment import Environment
-from .git_util import GitManagedAppRepo as Repo
-from .git_util import git_clone
-from .metadata import Metadata
-
 if TYPE_CHECKING:
     from packaging.requirements import Requirement
+    from packaging.specifiers import SpecifierSet
+    from watchdog.events import FileSystemEvent
+    from watchdog.observers.api import BaseObserver
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +87,23 @@ class _AiidaLabApp:
     metadata: dict[str, Any]
     name: str
     path: Path
+    # TODO: It would be nicer to use parsed packaging.Version as a key instead of str
+    # That way it could also be pre-sorted.
     releases: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_registry_entry(
         cls, path: Path, registry_entry: dict[str, Any]
     ) -> _AiidaLabApp:
+        # Filter out invalid versions
+        if releases := registry_entry.get("releases"):
+            versions = list(releases.keys())
+            for version in versions:
+                if not is_valid_version(version):
+                    logger.warning(
+                        f"{registry_entry.get('name', path)}: Ignoring invalid version '{version}'"
+                    )
+                    del registry_entry["releases"][version]
         return cls(
             path=path,
             **{
@@ -221,15 +235,13 @@ class _AiidaLabApp:
     ) -> Generator[str, None, None]:
         """Return a list of available versions excluding the ones with core dependency conflicts."""
         if self.is_registered():
-            for version in sorted(self.releases, key=parse, reverse=True):
+            for version in sort_semantic(self.releases, prereleases=prereleases):
                 version_requirements = self.parse_python_requirements(
                     self.releases[version]
                     .get("environment", {})
                     .get("python_requirements", [])
                 )
-                if (
-                    prereleases or not parse(version).is_prerelease
-                ) and self._strict_dependencies_met(version_requirements, python_bin):
+                if self._strict_dependencies_met(version_requirements, python_bin):
                     yield version
 
     def dirty(self) -> bool | None:
@@ -292,13 +304,17 @@ class _AiidaLabApp:
         else:
             shutil.rmtree(self.path)
 
-    def find_matching_releases(self, specifier, prereleases=None):
+    def find_matching_releases(
+        self, specifier: SpecifierSet, prereleases: bool | None = None
+    ) -> list[str]:
+        """Get available release versions matching the given specification."""
         matching_releases = list(
             specifier.filter(self.releases or [], prereleases=prereleases)
         )
-        # Sort by intrinsic order (e.g. 1.1.0 -> 1.0.1 -> 1.0.0 and so on)
-        matching_releases.sort(key=parse, reverse=True)
-        return matching_releases
+        # Sort semantically from latest to oldest version (e.g. 1.1.0 -> 1.0.1 -> 1.0.0)
+        # Note that prereleases were already potentially filtered
+        # so we do not need to filter again.
+        return sort_semantic(matching_releases, prereleases=True)
 
     @staticmethod
     def _strict_dependencies_met(
@@ -371,7 +387,7 @@ class _AiidaLabApp:
 
     def find_dependencies_to_install(
         self, version_to_install: str, python_bin: str | None = None
-    ) -> list[dict[str, Package | Requirement]]:
+    ) -> list[dict[str, Package | Requirement | None]]:
         """Returns a list of dependencies that need to be installed.
 
         If an unsupported version of a dependency is installed, it will look
@@ -522,14 +538,10 @@ class _AiidaLabApp:
         post_install_triggers: bool = True,
     ) -> None:
         if version is None:
-            try:
-                version = [
-                    version
-                    for version in sorted(self.releases, key=parse)
-                    if prereleases or not parse(version).is_prerelease
-                ][-1]
-            except IndexError:
+            versions = sort_semantic(self.releases, prereleases=prereleases)
+            if len(versions) == 0:
                 raise ValueError(f"No versions available for '{self}'.")
+            version = versions[0]
         if python_bin is None:
             python_bin = sys.executable
 
@@ -607,13 +619,13 @@ class AiidaLabAppWatch:
             The AiidaLab app to monitor.
     """
 
-    class AppPathFileSystemEventHandler(FileSystemEventHandler):  # type: ignore
+    class AppPathFileSystemEventHandler(FileSystemEventHandler):  # type: ignore[misc]
         """Internal event handeler for app path file system events."""
 
         def __init__(self, app: AiidaLabApp):
             self.app = app
 
-        def on_any_event(self, event):
+        def on_any_event(self, event: FileSystemEvent) -> None:
             """Refresh app for any event except opened."""
             if event.event_type not in (EVENT_TYPE_OPENED, EVENT_TYPE_CLOSED_NO_WRITE):
                 self.app.refresh_async()
@@ -623,7 +635,7 @@ class AiidaLabAppWatch:
 
         self._started = False
         self._monitor_thread: Thread | None = None
-        self._observer: Observer | None = None
+        self._observer: BaseObserver | None = None
         self._monitor_thread_stop = threading.Event()
 
     def __repr__(self) -> str:
@@ -634,6 +646,8 @@ class AiidaLabAppWatch:
 
         The ._observer thread is controlled by the ._monitor_thread.
         """
+        if not self.app.path:
+            return
         assert os.path.isdir(self.app.path)
         assert self._observer is None or not self._observer.is_alive()
 
@@ -673,6 +687,8 @@ class AiidaLabAppWatch:
         if self._monitor_thread is None:
 
             def check_path_exists_changed() -> None:
+                if not self.app.path:
+                    return
                 is_dir = os.path.isdir(self.app.path)
                 while not self._monitor_thread_stop.is_set():
                     switched = is_dir != os.path.isdir(self.app.path)
@@ -721,7 +737,7 @@ class AiidaLabAppWatch:
             self._observer.join(timeout=timeout)
 
 
-class AiidaLabApp(traitlets.HasTraits):  # type: ignore
+class AiidaLabApp(traitlets.HasTraits):
     """Manage installation status of an AiiDAlab app.
 
     Arguments:
@@ -744,7 +760,7 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
         [traitlets.Unicode(), traitlets.UseEnum(AppVersion)]
     )  # installed_version is updated from _AiiDALabApp only
     version_to_install = traitlets.Unicode(allow_none=True)
-    dependencies_to_install = traitlets.List()
+    dependencies_to_install = traitlets.List()  # type: ignore[var-annotated]
     remote_update_status = traitlets.UseEnum(
         AppRemoteUpdateStatus, allow_none=True
     ).tag(readonly=True)
@@ -786,27 +802,26 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
         self.path = str(self._app.path)
         self.refresh_async()
 
+        self._watch = None
         if watch:
             self._watch = AiidaLabAppWatch(self)
             self._watch.start()
-        else:
-            self._watch = None  # type: ignore
 
     def __str__(self) -> str:
         return f"<AiidaLabApp name='{self._app.name}'>"
 
     @traitlets.default("include_prereleases")
-    def _default_include_prereleases(self):
+    def _default_include_prereleases(self) -> bool:
         "Provide default value for include_prereleases trait." ""
         return False
 
     @traitlets.observe("include_prereleases")
-    def _observe_include_prereleases(self, change):
+    def _observe_include_prereleases(self, change: dict[str, Any]) -> None:
         if change["old"] != change["new"]:
             self.refresh()
 
     @traitlets.default("detached")
-    def _default_detached(self):
+    def _default_detached(self) -> bool | None:
         """Provide default value for detached traitlet."""
         if self.is_installed():
             return (
@@ -815,15 +830,15 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
         return None
 
     @traitlets.default("busy")
-    def _default_busy(self):  # pylint: disable=no-self-use
+    def _default_busy(self) -> bool:
         return False
 
     @traitlets.validate("version_to_install")
-    def _validate_version_to_install(self, proposal):
+    def _validate_version_to_install(self, proposal: dict[str, str]) -> str | None:
         """Validate the version to install."""
         with self._show_busy():
             if proposal["value"] is None:
-                return
+                return None
 
             if proposal["value"] not in self.available_versions:
                 raise traitlets.TraitError(
@@ -832,12 +847,12 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
             return proposal["value"]
 
     @traitlets.observe("version_to_install")
-    def _observe_version_to_install(self, change):
+    def _observe_version_to_install(self, change: dict[str, Any]) -> None:
         if change["old"] != change["new"]:
             self.refresh()
 
     @contextmanager
-    def _show_busy(self):
+    def _show_busy(self) -> Generator[None, None, None]:
         """Apply this decorator to indicate that the app is busy during execution."""
         # we need to use a lock here, because the busy trait is not thread-safe
         # we may use _show_busy in different threads, e.g. when installing and auto-status refresh
@@ -902,8 +917,8 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
         """Determine the currently installed version."""
         return self._app.installed_version()
 
-    @traitlets.default("compatible")  # type: ignore
-    def _default_compatible(self) -> None:  # pylint: disable=no-self-use
+    @traitlets.default("compatible")
+    def _default_compatible(self) -> None:
         return None
 
     def _is_compatible(self, app_version: str) -> bool:
@@ -924,11 +939,15 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
             return False  # compatibility indetermined for given version
 
     def _refresh_versions(self) -> None:
+        from packaging.version import parse
+
         self.installed_version = (
             self._get_installed_version()
         )  # only update at this refresh method
+
         self.include_prereleases = self.include_prereleases or (
             isinstance(self.installed_version, str)
+            and is_valid_version(self.installed_version)
             and parse(self.installed_version).is_prerelease
         )
 
@@ -942,9 +961,12 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
         )
 
     def _refresh_dependencies_to_install(self) -> None:
-        self.dependencies_to_install = self._app.find_dependencies_to_install(
-            self.version_to_install
-        )
+        if self.version_to_install:
+            self.dependencies_to_install = self._app.find_dependencies_to_install(
+                self.version_to_install
+            )
+        else:
+            self.dependencies_to_install = []
 
     @throttled(calls_per_second=1)  # type: ignore
     def refresh(self) -> None:
@@ -977,7 +999,7 @@ class AiidaLabApp(traitlets.HasTraits):  # type: ignore
         refresh_thread.start()
 
     @property
-    def metadata(self):
+    def metadata(self) -> dict[str, Any]:
         """Return metadata dictionary. Give the priority to the local copy (better for the developers)."""
         return self._app.metadata
 
