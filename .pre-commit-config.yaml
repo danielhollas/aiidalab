@@ -51,6 +51,11 @@ repos:
                 - types-click-spinner
                 - traitlets~=5.0
                 - packaging
+                - dulwich~=0.20
+                - watchdog
+                - requests_mock
+                - requests_cache
+                - jsonref
             exclude: >-
                 (?x)^(
                   docs/.*|

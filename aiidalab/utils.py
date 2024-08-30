@@ -13,18 +13,20 @@ from functools import wraps
 from pathlib import Path
 from subprocess import run
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from cachetools import TTLCache, cached
-from packaging.requirements import Requirement
 from packaging.utils import NormalizedName, canonicalize_name
 
 from .config import AIIDALAB_REGISTRY
 from .environment import Environment
 from .fetch import fetch_from_url
 from .metadata import Metadata
+
+if TYPE_CHECKING:
+    from packaging.requirements import Requirement
 
 logger = logging.getLogger(__name__)
 FIND_INSTALLED_PACKAGES_CACHE = TTLCache(maxsize=32, ttl=60)  # type: ignore
@@ -49,7 +51,7 @@ except ImportError:
         "The requests_cache package is missing. "
         "Requests made to the app registry will not be cached."
     )
-    _session = requests.Session()  # type: ignore
+    _session = requests.Session()  # type: ignore[assignment]
 
 
 def load_app_registry_index() -> Any:
@@ -210,6 +212,37 @@ def get_package_by_name(packages: dict[str, Package], name: str) -> Package | No
         if package.canonical_name == canonicalize_name(name):
             return package
     return None
+
+
+def is_valid_version(version: str) -> bool:
+    """Return True if given string is a PEP440-compliant version, False otherwise."""
+    from packaging.version import InvalidVersion, parse
+
+    try:
+        parse(version)
+    except InvalidVersion:
+        return False
+    else:
+        return True
+
+
+def sort_semantic(
+    versions: Iterable[str], reverse: bool = True, prereleases: bool = False
+) -> list[str]:
+    """Sort a list of app version strings semantically according to semver.
+
+    By default, sorting is performed in descending order (i.e. latest versions first).
+    By default, pre-release versions are filtured out.
+
+    :raises: packaging.version.InvalidVersion if the input list contains invalid version.
+    """
+    from packaging.version import parse
+
+    return [
+        version
+        for version in sorted(versions, key=parse, reverse=reverse)
+        if prereleases or not parse(version).is_prerelease
+    ]
 
 
 def split_git_url(git_url: str) -> tuple[str, str | None]:

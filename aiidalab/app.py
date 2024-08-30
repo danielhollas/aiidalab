@@ -26,30 +26,35 @@ from uuid import uuid4
 import requests
 import traitlets
 from dulwich.errors import NotGitRepository
-from packaging.requirements import Requirement
-from packaging.version import parse
 from watchdog.events import EVENT_TYPE_OPENED, FileSystemEventHandler
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
-
-from aiidalab.utils import (
-    FIND_INSTALLED_PACKAGES_CACHE,
-    Package,
-    PEP508CompliantUrl,
-    find_installed_packages,
-    get_package_by_name,
-    run_pip_install,
-    run_post_install_script,
-    run_verdi_daemon_restart,
-    split_git_url,
-    this_or_only_subdir,
-    throttled,
-)
 
 from .environment import Environment
 from .git_util import GitManagedAppRepo as Repo
 from .git_util import git_clone
 from .metadata import Metadata
+from .utils import (
+    FIND_INSTALLED_PACKAGES_CACHE,
+    Package,
+    PEP508CompliantUrl,
+    find_installed_packages,
+    get_package_by_name,
+    is_valid_version,
+    run_pip_install,
+    run_post_install_script,
+    run_verdi_daemon_restart,
+    sort_semantic,
+    split_git_url,
+    this_or_only_subdir,
+    throttled,
+)
+
+if TYPE_CHECKING:
+    from packaging.requirements import Requirement
+    from packaging.specifiers import SpecifierSet
+    from watchdog.events import FileSystemEvent
+    from watchdog.observers.api import BaseObserver
 
 if TYPE_CHECKING:
     from packaging.specifiers import SpecifierSet
@@ -83,12 +88,23 @@ class _AiidaLabApp:
     metadata: dict[str, Any]
     name: str
     path: Path
+    # TODO: It would be nicer to use parsed packaging.Version as a key instead of str
+    # That way it could also be pre-sorted.
     releases: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_registry_entry(
         cls, path: Path, registry_entry: dict[str, Any]
     ) -> _AiidaLabApp:
+        # Filter out invalid versions
+        if releases := registry_entry.get("releases"):
+            versions = list(releases.keys())
+            for version in versions:
+                if not is_valid_version(version):
+                    logger.warning(
+                        f"{registry_entry.get('name', path)}: Ignoring invalid version '{version}'"
+                    )
+                    del registry_entry["releases"][version]
         return cls(
             path=path,
             **{
@@ -154,6 +170,30 @@ class _AiidaLabApp:
         except NotGitRepository:
             return None
 
+    def parse_python_requirements(self, requirements: list[str]) -> list[Requirement]:
+        """Turn a list of python package requirements
+        from strings to packaging.Requirement instances.
+
+        Invalid requirements are skipped. This is an okay approach here since
+        we only look at the requirements in a best-effort way to determine if
+        an app can be installed.
+
+        If an app contains an invalid requirement, it may (will) fail to install
+        once we invoke pip, but we don't want to to fail here.
+        """
+        from packaging.requirements import InvalidRequirement, Requirement
+
+        parsed_reqs = []
+        for req in requirements:
+            try:
+                parsed_req = Requirement(req)
+            except InvalidRequirement:
+                logger.warning(f"{self.name} app: Invalid requirement '{req}'")
+                continue
+            else:
+                parsed_reqs.append(parsed_req)
+        return parsed_reqs
+
     def installed_version(self) -> AppVersion | str:
         def get_version_from_metadata() -> AppVersion | str:
             version = self.metadata.get("version")
@@ -196,18 +236,13 @@ class _AiidaLabApp:
     ) -> Generator[str, None, None]:
         """Return a list of available versions excluding the ones with core dependency conflicts."""
         if self.is_registered():
-            for version in sorted(self.releases, key=parse, reverse=True):
-                version_requirements = [
-                    Requirement(r)
-                    for r in (
-                        self.releases[version]
-                        .get("environment", {})
-                        .get("python_requirements", [])
-                    )
-                ]
-                if (
-                    prereleases or not parse(version).is_prerelease
-                ) and self._strict_dependencies_met(version_requirements, python_bin):
+            for version in sort_semantic(self.releases, prereleases=prereleases):
+                version_requirements = self.parse_python_requirements(
+                    self.releases[version]
+                    .get("environment", {})
+                    .get("python_requirements", [])
+                )
+                if self._strict_dependencies_met(version_requirements, python_bin):
                     yield version
 
     def dirty(self) -> bool | None:
@@ -273,13 +308,14 @@ class _AiidaLabApp:
     def find_matching_releases(
         self, specifier: SpecifierSet, prereleases: bool | None = None
     ) -> list[str]:
-        """TODO: Write a docstring"""
+        """Get available release versions matching the given specification."""
         matching_releases = list(
             specifier.filter(self.releases or [], prereleases=prereleases)
         )
-        # Sort by intrinsic order (e.g. 1.1.0 -> 1.0.1 -> 1.0.0 and so on)
-        matching_releases.sort(key=parse, reverse=True)
-        return matching_releases
+        # Sort semantically from latest to oldest version (e.g. 1.1.0 -> 1.0.1 -> 1.0.0)
+        # Note that prereleases were already potentially filtered
+        # so we do not need to filter again.
+        return sort_semantic(matching_releases, prereleases=True)
 
     @staticmethod
     def _strict_dependencies_met(
@@ -305,10 +341,10 @@ class _AiidaLabApp:
 
     @staticmethod
     def _find_incompatibilities_python(
-        requirements: list[str], python_bin: str
+        requirements: list[Requirement], python_bin: str
     ) -> Generator[Requirement, None, None]:
         packages = find_installed_packages(python_bin)
-        for requirement in map(Requirement, requirements):
+        for requirement in requirements:
             pkg = get_package_by_name(packages, requirement.name)
             if pkg is None:
                 yield requirement
@@ -339,9 +375,10 @@ class _AiidaLabApp:
 
         for key, spec in environment.items():
             if key == "python_requirements":
+                requirements = self.parse_python_requirements(spec)
                 yield from zip(
                     repeat("python"),
-                    self._find_incompatibilities_python(spec, python_bin),
+                    self._find_incompatibilities_python(requirements, python_bin),
                 )
             else:
                 raise ValueError(f"Unknown eco-system '{key}'")
@@ -502,14 +539,10 @@ class _AiidaLabApp:
         post_install_triggers: bool = True,
     ) -> None:
         if version is None:
-            try:
-                version = [
-                    version
-                    for version in sorted(self.releases, key=parse)
-                    if prereleases or not parse(version).is_prerelease
-                ][-1]
-            except IndexError:
+            versions = sort_semantic(self.releases, prereleases=prereleases)
+            if len(versions) == 0:
                 raise ValueError(f"No versions available for '{self}'.")
+            version = versions[0]
         if python_bin is None:
             python_bin = sys.executable
 
@@ -909,11 +942,15 @@ class AiidaLabApp(traitlets.HasTraits):
             return False  # compatibility indetermined for given version
 
     def _refresh_versions(self) -> None:
+        from packaging.version import parse
+
         self.installed_version = (
             self._get_installed_version()
         )  # only update at this refresh method
+
         self.include_prereleases = self.include_prereleases or (
             isinstance(self.installed_version, str)
+            and is_valid_version(self.installed_version)
             and parse(self.installed_version).is_prerelease
         )
 
